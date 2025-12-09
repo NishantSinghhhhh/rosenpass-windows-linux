@@ -12,6 +12,7 @@ pub mod msgs;
 pub mod pqkem;
 pub mod prftree;
 pub mod protocol;
+pub mod wireguard;
 
 #[derive(thiserror::Error, Debug)]
 pub enum RosenpassError {

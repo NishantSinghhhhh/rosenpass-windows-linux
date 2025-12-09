@@ -109,7 +109,15 @@ impl Cli {
                     .status();
 
                 if !(man_cmd.is_ok() && man_cmd.unwrap().success()) {
-                    println!(include_str!(env!("ROSENPASS_MAN")));
+                   #[cfg(not(windows))]
+                    {
+                        println!(include_str!(env!("ROSENPASS_MAN")));
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        println!("Manual page is not available on Windows.");
+                    }
                 }
             }
             GenConfig { config_file, force } => {

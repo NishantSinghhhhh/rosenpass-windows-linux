@@ -263,7 +263,7 @@ impl Rosenpass {
                     Peer
                 }
                 (PeerPsk, psk, Some(peer)) => {
-                    ensure!(already_set.insert(PeerEndpoint), "peer psk was already set");
+                    ensure!(already_set.insert(PeerPsk), "peer psk was already set");
                     peer.pre_shared_key = Some(psk.into());
                     Peer
                 }
@@ -344,6 +344,7 @@ impl Rosenpass {
 
 impl Rosenpass {
     /// Generate an example configuration
+    #[cfg(not(windows))]
     pub fn example_config() -> Self {
         let peer = RosenpassPeer {
             public_key: "rp-peer-public-key".into(),
@@ -360,6 +361,26 @@ impl Rosenpass {
             .into_iter()
             .map(|x| x.to_string())
             .collect(),
+            key_out: Some("rp-key-out".into()),
+            pre_shared_key: None,
+            wg: None,
+        };
+
+        Self {
+            public_key: "rp-public-key".into(),
+            secret_key: "rp-secret-key".into(),
+            peers: vec![peer],
+            ..Self::new("", "")
+        }
+    }
+
+    /// Windows-safe example configuration (no wg, no /dev/stdin)
+    #[cfg(windows)]
+    pub fn example_config() -> Self {
+        let peer = RosenpassPeer {
+            public_key: "rp-peer-public-key".into(),
+            endpoint: Some("my-peer.test:9999".into()),
+            exchange_command: vec![], // Windows users must handle PSK manually
             key_out: Some("rp-key-out".into()),
             pre_shared_key: None,
             wg: None,

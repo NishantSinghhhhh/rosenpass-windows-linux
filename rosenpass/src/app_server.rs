@@ -1,5 +1,4 @@
 use anyhow::bail;
-
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use mio::Interest;
@@ -7,7 +6,6 @@ use mio::Token;
 
 use std::cell::Cell;
 use std::io::Write;
-
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -16,10 +14,7 @@ use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
-use std::process::Command;
-use std::process::Stdio;
 use std::slice;
-use std::thread;
 use std::time::Duration;
 
 use crate::util::fopen_w;
@@ -29,23 +24,24 @@ use crate::{
     util::{b64_writer, fmt_b64},
 };
 
+// WireGuard backend import
+use crate::wireguard;
+
 const IPV4_ANY_ADDR: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
 const IPV6_ANY_ADDR: Ipv6Addr = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0);
 
 fn ipv4_any_binding() -> SocketAddr {
-    // addr, port
     SocketAddr::V4(SocketAddrV4::new(IPV4_ANY_ADDR, 0))
 }
 
 fn ipv6_any_binding() -> SocketAddr {
-    // addr, port, flowinfo, scope_id
     SocketAddr::V6(SocketAddrV6::new(IPV6_ANY_ADDR, 0, 0, 0))
 }
 
 #[derive(Default, Debug)]
 pub struct AppPeer {
     pub outfile: Option<PathBuf>,
-    pub outwg: Option<WireguardOut>, // TODO make this a generic command
+    pub outwg: Option<WireguardOut>,
     pub initial_endpoint: Option<Endpoint>,
     pub current_endpoint: Option<Endpoint>,
 }
@@ -60,7 +56,6 @@ impl AppPeer {
 
 #[derive(Default, Debug)]
 pub struct WireguardOut {
-    // impl KeyOutput
     pub dev: String,
     pub pk: String,
     pub extra_params: Vec<String>,
@@ -584,74 +579,65 @@ impl AppServer {
     }
 
     pub fn output_key(
-        &self,
-        peer: AppPeerPtr,
-        why: KeyOutputReason,
-        key: &SymKey,
-    ) -> anyhow::Result<()> {
-        let peerid = peer.lower().get(&self.crypt).pidt()?;
-        let ap = peer.get_app(self);
+            &self,
+            peer: AppPeerPtr,
+            why: KeyOutputReason,
+            key: &SymKey,
+        ) -> anyhow::Result<()> {
+            let peerid = peer.lower().get(&self.crypt).pidt()?;
+            let ap = peer.get_app(self);
 
-        if self.verbose() {
-            let msg = match why {
-                KeyOutputReason::Exchanged => "Exchanged key with peer",
-                KeyOutputReason::Stale => "Erasing outdated key from peer",
-            };
-            info!("{} {}", msg, fmt_b64(&*peerid));
-        }
+            if self.verbose() {
+                let msg = match why {
+                    KeyOutputReason::Exchanged => "Exchanged key with peer",
+                    KeyOutputReason::Stale => "Erasing outdated key from peer",
+                };
+                info!("{} {}", msg, fmt_b64(&*peerid));
+            }
 
-        if let Some(of) = ap.outfile.as_ref() {
-            // This might leave some fragments of the secret on the stack;
-            // in practice this is likely not a problem because the stack likely
-            // will be overwritten by something else soon but this is not exactly
-            // guaranteed. It would be possible to remedy this, but since the secret
-            // data will linger in the linux page cache anyways with the current
-            // implementation, going to great length to erase the secret here is
-            // not worth it right now.
-            b64_writer(fopen_w(of)?).write_all(key.secret())?;
-            let why = match why {
-                KeyOutputReason::Exchanged => "exchanged",
-                KeyOutputReason::Stale => "stale",
-            };
+            if let Some(of) = ap.outfile.as_ref() {
+                b64_writer(fopen_w(of)?).write_all(key.secret())?;
+                let why = match why {
+                    KeyOutputReason::Exchanged => "exchanged",
+                    KeyOutputReason::Stale => "stale",
+                };
 
-            // this is intentionally writing to stdout instead of stderr, because
-            // it is meant to allow external detection of a successful key-exchange
-            println!(
-                "output-key peer {} key-file {of:?} {why}",
-                fmt_b64(&*peerid)
-            );
-        }
+                println!(
+                    "output-key peer {} key-file {of:?} {why}",
+                    fmt_b64(&*peerid)
+                );
+            }
 
-        if let Some(owg) = ap.outwg.as_ref() {
-            let mut child = Command::new("wg")
-                .arg("set")
-                .arg(&owg.dev)
-                .arg("peer")
-                .arg(&owg.pk)
-                .arg("preshared-key")
-                .arg("/dev/stdin")
-                .stdin(Stdio::piped())
-                .args(&owg.extra_params)
-                .spawn()?;
-            b64_writer(child.stdin.take().unwrap()).write_all(key.secret())?;
+            // Unified backend call (OS selection happens inside wireguard::set_psk)
+            if let Some(owg) = ap.outwg.as_ref() {
+                crate::wireguard::set_psk(
+                    &owg.dev,
+                    &owg.pk,
+                    key.secret(),
+                    &owg.extra_params,
+                )?;
 
-            thread::spawn(move || {
-                let status = child.wait();
+                #[cfg(windows)]
+                    {
+                        use std::net::Ipv4Addr;
 
-                if let Ok(status) = status {
-                    if status.success() {
-                        debug!("successfully passed psk to wg")
-                    } else {
-                        error!("could not pass psk to wg {:?}", status)
+                        crate::wireguard::ensure_interface(&owg.dev)?;
+
+                        // Example values — MUST match your RP setup
+                        let local_ip = Ipv4Addr::new(192, 168, 21, 1);
+                        let vpn_net  = Ipv4Addr::new(192, 168, 21, 0);
+
+                        crate::wireguard::set_interface_ipv4(&owg.dev, local_ip, 24)?;
+                        crate::wireguard::add_route(vpn_net, 24, local_ip)?;
+
+                        crate::wireguard::allow_udp_firewall(9999, "Rosenpass")?;
+                        crate::wireguard::allow_udp_firewall(10000, "WireGuard")?;
                     }
-                } else {
-                    error!("wait failed: {:?}", status)
-                }
-            });
-        }
 
-        Ok(())
-    }
+            }
+
+            Ok(())
+        }
 
     pub fn poll(&mut self, rx_buf: &mut [u8]) -> anyhow::Result<AppPollResult> {
         use crate::protocol::PollResult as C;

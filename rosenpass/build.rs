@@ -49,5 +49,12 @@ fn main() {
     // For now, rerun the build script on every time, as the build script
     // is not very expensive right now.
     println!("cargo:rerun-if-changed=./");
+
+    // ✅ Linux/macOS: generate man page
+    #[cfg(not(windows))]
     man();
+
+    // ✅ Windows: skip man-page generation safely
+    #[cfg(windows)]
+    println!("cargo:warning=Skipping man page generation on Windows");
 }
