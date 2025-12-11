@@ -7,7 +7,6 @@ use std::net::Ipv4Addr;
 
 use crate::util::b64_writer;
 
-/// Linux WireGuard backend using the `wg` CLI.
 pub fn set_psk(
     dev: &str,
     peer_pk: &str,
@@ -22,6 +21,7 @@ pub fn set_psk(
         .arg("preshared-key")
         .arg("/dev/stdin")
         .stdin(Stdio::piped())
+        .stderr(Stdio::piped())  // ← Capture errors
         .args(extra)
         .spawn()?;
 
@@ -30,23 +30,18 @@ pub fn set_psk(
             anyhow!("failed to open wg stdin")
         })?;
         b64_writer(&mut stdin).write_all(psk)?;
-    } // ✅ stdin closed properly
+    } // ← stdin closes here
 
-    thread::spawn(move || {
-        let status = child.wait();
+    let output = child.wait_with_output()?;  // ← WAIT synchronously!
 
-        if let Ok(status) = status {
-            if status.success() {
-                debug!("successfully passed psk to wg")
-            } else {
-                error!("could not pass psk to wg {:?}", status)
-            }
-        } else {
-            error!("wait failed: {:?}", status)
-        }
-    });
-
-    Ok(())
+    if output.status.success() {
+        debug!("successfully passed psk to wg");
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&output.stderr);
+        error!("wg command failed: {}", err);
+        Err(anyhow!("wg set psk failed: {}", err))
+    }
 }
 
 pub fn shutdown_all() {}
