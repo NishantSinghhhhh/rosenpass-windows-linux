@@ -1,7 +1,7 @@
 # Rust
 /target
+/1
 
-# LaTeX
 _minted-*
 _markdown_*
 *.aux
